@@ -8,7 +8,7 @@ import threading
 from multiprocessing.synchronize import Event as MpEvent
 from pathlib import Path
 
-from peewee import DatabaseError, chunked
+from peewee import DatabaseError, chunked, JOIN, fn, Select
 
 from frigate.config import FrigateConfig, RetainModeEnum
 from frigate.const import CACHE_DIR, RECORD_DIR
@@ -169,6 +169,29 @@ class RecordingCleanup(threading.Thread):
                 ).execute()
 
             logger.debug(f"End camera: {camera}.")
+
+
+        oldest_recording = Recordings.select().order_by(Recordings.start_time).get()
+        logger.debug(f"Oldest recording in the db: {oldest_recording.start_time}")
+
+
+        res = Event.select(Event, fn.COUNT(Recordings.path).alias('count')).join(Recordings, on=(
+            (Recordings.start_time.between(Event.start_time, Event.end_time)) |
+            (Event.start_time.between(Recordings.start_time, Recordings.end_time)) |
+            (Event.end_time.between(Recordings.start_time, Recordings.end_time))
+            ), join_type=JOIN.LEFT_OUTER) \
+        .where(Event.end_time.is_null(False)) \
+        .group_by(Event.id) \
+        .order_by(Event.start_time.desc())\
+        
+        count_a = fn.COUNT(1).alias("count")
+        data = res.select_from(count_a, fn.MAX(res.c.start_time).alias('max'), fn.MIN(res.c.start_time).alias('min'),).from_(res).where(count_a <= 0)
+
+        # logger.debug(f"test sql: {data.sql()}")
+
+        elem = data.get()
+        if elem.count > 0:
+            logger.warn(f"Found events missing recordings: count:{elem.count}, min:{elem.min}, max:{elem.max}")
 
         logger.debug("End all cameras.")
         logger.debug("End expire recordings.")

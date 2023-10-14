@@ -187,6 +187,7 @@ class RecordingMaintainer(threading.Thread):
             camera not in self.config.cameras
             or not self.process_info[camera]["record_enabled"].value
         ):
+            logger.debug(f"DELETE: recordings are turned off for {camera}")
             Path(cache_path).unlink(missing_ok=True)
             self.end_time_cache.pop(cache_path, None)
             return
@@ -209,7 +210,7 @@ class RecordingMaintainer(threading.Thread):
                 if duration == -1:
                     logger.warning(f"Failed to probe corrupt segment {cache_path}")
 
-                logger.warning(f"Discarding a corrupt recording segment: {cache_path}")
+                logger.warning(f"DELETE: Discarding a corrupt recording segment: {cache_path}")
                 Path(cache_path).unlink(missing_ok=True)
                 return
 
@@ -229,6 +230,7 @@ class RecordingMaintainer(threading.Thread):
                 # and remove this segment
                 if event.start_time > end_time.timestamp():
                     overlaps = False
+                    logger.debug(f"DELETE: removing file due to start_time: {event.start_time}, {end_time.timestamp()}")
                     Path(cache_path).unlink(missing_ok=True)
                     self.end_time_cache.pop(cache_path, None)
                     break
@@ -259,6 +261,7 @@ class RecordingMaintainer(threading.Thread):
                 ][-1][0]
                 retain_cutoff = most_recently_processed_frame_time - pre_capture
                 if end_time.timestamp() < retain_cutoff:
+                    logger.debug(f"DELETE: removing end time before retain cutoff: {end_time.timestamp()} < {retain_cutoff}")
                     Path(cache_path).unlink(missing_ok=True)
                     self.end_time_cache.pop(cache_path, None)
         # else retain days includes this segment
@@ -273,6 +276,7 @@ class RecordingMaintainer(threading.Thread):
     ) -> SegmentInfo:
         active_count = 0
         motion_count = 0
+        frame_count = 0
         for frame in self.object_recordings_info[camera]:
             # frame is after end time of segment
             if frame[0] > end_time.timestamp():
@@ -281,6 +285,7 @@ class RecordingMaintainer(threading.Thread):
             if frame[0] < start_time.timestamp():
                 continue
 
+            frame_count += 1
             active_count += len(
                 [
                     o
@@ -305,6 +310,7 @@ class RecordingMaintainer(threading.Thread):
 
         average_dBFS = 0 if not audio_values else np.average(audio_values)
 
+        logger.debug(f"camera: {camera} frame count: {frame_count}")
         return SegmentInfo(motion_count, active_count, round(average_dBFS))
 
     async def move_segment(
@@ -318,8 +324,11 @@ class RecordingMaintainer(threading.Thread):
     ) -> Optional[Recordings]:
         segment_info = self.segment_stats(camera, start_time, end_time)
 
+        logger.debug(f"Segment info: {camera}: {start_time}, {end_time}, {segment_info.motion_box_count}, {segment_info.average_dBFS}, {segment_info.active_object_count}")
+        
         # check if the segment shouldn't be stored
         if segment_info.should_discard_segment(store_mode):
+            logger.debug(f"DELETE: due to: should discard segment: {camera}: {start_time}, {end_time}, {segment_info.motion_box_count}, {segment_info.average_dBFS}, {segment_info.active_object_count}")
             Path(cache_path).unlink(missing_ok=True)
             self.end_time_cache.pop(cache_path, None)
             return
@@ -410,6 +419,7 @@ class RecordingMaintainer(threading.Thread):
         wait_time = 0.0
         while not self.stop_event.wait(wait_time):
             run_start = datetime.datetime.now().timestamp()
+            run_counts = {}
             stale_frame_count = 0
             stale_frame_count_threshold = 10
             # empty the object recordings info queue
@@ -435,6 +445,9 @@ class RecordingMaintainer(threading.Thread):
                                 regions,
                             )
                         )
+                        if camera not in run_counts:
+                            run_counts[camera] = []
+                        run_counts[camera].append({'t': frame_time, 'mboxes': motion_boxes})
                 except queue.Empty:
                     q_size = self.object_recordings_info_queue.qsize()
                     if q_size > 5:
@@ -483,6 +496,12 @@ class RecordingMaintainer(threading.Thread):
                 )
                 logger.error(e)
             duration = datetime.datetime.now().timestamp() - run_start
+            logger.debug(f"object_recordings_info loop duration: {duration}")
+            for k in run_counts:
+                t_start = datetime.datetime.fromtimestamp(min([x['t'] for x in run_counts[k]]))
+                t_end = datetime.datetime.fromtimestamp(max([x['t'] for x in run_counts[k]]))
+                t_len = (t_end-t_start).total_seconds()
+                logger.debug(f"object_recordings_info loop camera: {k}, count: {len(run_counts[k])}, t_start: {t_start}, t_end: {t_end}, t_len: {t_len:.2f}, fps: {(len(run_counts[k])/t_len) if t_len > 0 else 0:.2f} boxes: {[len(x['mboxes']) for x in run_counts[k]]}")
             wait_time = max(0, 5 - duration)
 
         logger.info("Exiting recording maintenance...")
