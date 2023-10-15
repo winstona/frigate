@@ -163,6 +163,9 @@ class EventCleanup(threading.Thread):
                         )
                         media_path.unlink(missing_ok=True)
 
+        oldest_event = Event.select().order_by(Event.start_time).get()
+        logger.debug(f"Oldest event in the db: {oldest_event.start_time}")
+
         # update the clips attribute for the db entry
         Event.update(update_params).where(Event.id << events_to_update).execute()
         return events_to_update
@@ -214,6 +217,9 @@ class EventCleanup(threading.Thread):
             self.purge_duplicates()
 
             # drop events from db where has_clip and has_snapshot are false
+            for evt in Event.select().where(Event.has_clip == False, Event.has_snapshot == False):
+                logger.warning(f"event without clip or snapshot being deleted: {evt.id}: {evt.label} start_t: {evt.start_time}, end_t: {evt.end_time}, false positive: {evt.false_positive}")
+                
             delete_query = Event.delete().where(
                 Event.has_clip == False, Event.has_snapshot == False
             )

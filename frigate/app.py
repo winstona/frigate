@@ -39,6 +39,7 @@ from frigate.log import log_process, root_configurer
 from frigate.models import Event, Recordings, RecordingsToDelete, Timeline
 from frigate.object_detection import ObjectDetectProcess
 from frigate.object_processing import TrackedObjectProcessor
+from frigate.queue_stats import QueueStatsProcessor
 from frigate.output import output_frames
 from frigate.plus import PlusApi
 from frigate.ptz.autotrack import PtzAutoTrackerThread
@@ -243,6 +244,23 @@ class FrigateApp:
 
         # Queue for inter process communication
         self.inter_process_queue: Queue = mp.Queue()
+
+        self.queue_stats_processor = QueueStatsProcessor(
+            self.stop_event,
+            queues=[
+                {'name': x, 'queue': getattr(self, f"{x}_queue")} for x in [
+                    'event',
+                    'event_processed',
+                    'video_output',
+                    'detected_frames',
+                    'object_recordings_info',
+                    'audio_recordings_info',
+                    'timeline',
+                    'inter_process',
+                ]
+            ]
+        )
+        self.queue_stats_processor.start()
 
     def init_database(self) -> None:
         def vacuum_db(db: SqliteExtDatabase) -> None:
